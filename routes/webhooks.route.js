@@ -97,7 +97,7 @@ router.post('/', async (req, res) => {
       output,
       status: 400,
     });
-    res.status(400);
+    res.status(200);
     res.json(output);
   }
 });
