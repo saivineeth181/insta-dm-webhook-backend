@@ -2,8 +2,7 @@ const express = require('express');
 const router = express.Router();
 const server = require('../server');
 const { createClient } = require('@supabase/supabase-js');
-
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const supabase = createClient("https://icemorpwgrfezgtjwrrr.supabase.co","eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImljZW1vcnB3Z3JmZXpndGp3cnJyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDc4NDAwOTAsImV4cCI6MjA2MzQxNjA5MH0.ZJD8OgDJpUTtW8QJ9c_kg4Rd3lid1PXykS86X1jLNUI");
 
 function logApi({ method, path, input, output, status }) {
   console.log('---');
@@ -22,8 +21,9 @@ async function saveToSupabase(type, payload) {
 }
 
 // Verification endpoint
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   logApi({ method: 'GET', path: '/webhooks', input: { query: req.query } });
+  await saveToSupabase('raw_webhook', req.body); // Save full request
 
   const response = req.query['hub.challenge'];
   if (req.query['hub.verify_token'] === 'instadmtesttoken') {
