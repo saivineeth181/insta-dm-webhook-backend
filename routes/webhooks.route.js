@@ -1,10 +1,10 @@
-const { default: axios } = require('axios');
 const express = require('express');
-const test = require('../server');
 const router = express.Router();
 const server = require('../server');
+const { createClient } = require('@supabase/supabase-js');
 
-// Helper function to log input/output
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
 function logApi({ method, path, input, output, status }) {
   console.log('---');
   console.log(`[${new Date().toISOString()}] API ${method} ${path}`);
@@ -14,91 +14,85 @@ function logApi({ method, path, input, output, status }) {
   console.log('---');
 }
 
+async function saveToSupabase(type, payload) {
+  const { error } = await supabase
+    .from('webhook_logs')
+    .insert([{ event_type: type, payload, created_at: new Date().toISOString() }]);
+  if (error) console.error('Supabase insert error:', error);
+}
+
+// Verification endpoint
 router.get('/', (req, res) => {
-  logApi({
-    method: 'GET',
-    path: '/webhooks',
-    input: { query: req.query, headers: req.headers },
-  });
+  logApi({ method: 'GET', path: '/webhooks', input: { query: req.query } });
 
   const response = req.query['hub.challenge'];
-  try {
-    if (req.query['hub.verify_token'] === 'instadmtesttoken') {
-      logApi({
-        method: 'GET',
-        path: '/webhooks',
-        output: response,
-        status: 200,
-      });
-      res.status(200);
-      res.send(response);
-    } else {
-      const output = { status: 'token_not_verified' };
-      logApi({
-        method: 'GET',
-        path: '/webhooks',
-        output,
-        status: 401,
-      });
-      res.status(401);
-      res.json(output);
-    }
-  } catch (error) {
-    const output = { message: error.message };
-    logApi({
-      method: 'GET',
-      path: '/webhooks',
-      output,
-      status: 400,
-    });
-    res.status(400);
-    res.json(output);
+  if (req.query['hub.verify_token'] === 'instadmtesttoken') {
+    logApi({ method: 'GET', path: '/webhooks', output: response, status: 200 });
+    return res.status(200).send(response);
   }
+
+  logApi({ method: 'GET', path: '/webhooks', output: { status: 'token_not_verified' }, status: 401 });
+  res.status(401).json({ status: 'token_not_verified' });
 });
 
+// Main webhook POST handler
 router.post('/', async (req, res) => {
-  logApi({
-    method: 'POST',
-    path: '/webhooks',
-    input: { body: req.body, headers: req.headers },
-  });
+  logApi({ method: 'POST', path: '/webhooks', input: req.body });
+  await saveToSupabase('raw_webhook', req.body); // Save full request
 
   let io = server.getIO();
-  const text = req.body.entry?.[0]?.messaging?.[0]?.message?.text || '';
-  const senderIGSID = req.body.entry?.[0]?.messaging?.[0]?.sender?.id || '';
-  const timestamp = req.body.entry?.[0]?.time || '';
+  let events = [];
+
   try {
-    if (!text || !senderIGSID) {
-      throw new Error('Something went wrong');
+    if (req.body.object === 'instagram') {
+      req.body.entry.forEach(entry => {
+        entry.changes.forEach(change => {
+          if (change.field === 'comments') {
+            events.push({
+              type: 'comment',
+              text: change.value.text,
+              from: change.value.from?.username,
+              id: change.value.id,
+              timestamp: entry.time * 1000
+            });
+          } else if (change.field === 'live_comments') {
+            events.push({
+              type: 'live_comment',
+              text: change.value.text,
+              from: change.value.from?.username,
+              id: change.value.id,
+              timestamp: entry.time * 1000
+            });
+          }
+        });
+      });
+    } else if (req.body.object === 'page') {
+      req.body.entry.forEach(entry => {
+        entry.messaging.forEach(msg => {
+          if (msg.message?.text) {
+            events.push({
+              type: 'direct_message',
+              text: msg.message.text,
+              from: msg.sender.id,
+              timestamp: msg.timestamp
+            });
+          }
+        });
+      });
     }
 
-    const socketResponse = {
-      message: text,
-      senderId: senderIGSID,
-      date: new Date(timestamp).toLocaleDateString(),
-      timestamp,
-    };
-    io.emit('message_received', socketResponse);
+    // Emit and save each event
+    for (let ev of events) {
+      io.emit('message_received', ev);
+      await saveToSupabase(ev.type, ev);
+    }
 
-    const output = { status: 'success' };
-    logApi({
-      method: 'POST',
-      path: '/webhooks',
-      output,
-      status: 200,
-    });
-    res.status(200);
-    res.json(output);
+    logApi({ method: 'POST', path: '/webhooks', output: { status: 'success', events }, status: 200 });
+    res.status(200).json({ status: 'success' });
+
   } catch (error) {
-    const output = { status: 'failure', message: error.message };
-    logApi({
-      method: 'POST',
-      path: '/webhooks',
-      output,
-      status: 400,
-    });
-    res.status(200);
-    res.json(output);
+    logApi({ method: 'POST', path: '/webhooks', output: { status: 'failure', message: error.message }, status: 400 });
+    res.status(400).json({ status: 'failure', message: error.message });
   }
 });
 
